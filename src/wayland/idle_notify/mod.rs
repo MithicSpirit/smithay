@@ -189,6 +189,46 @@ impl<D: IdleNotifierHandler> IdleNotifierState<D> {
         }
     }
 
+    /// Pretend that the seat has been idle for exactly `idle_time`, ignoring inhibitors.
+    ///
+    /// You may want to use [`Self::notify_activity`] instead which accepts a [`Seat`].
+    pub fn force_idle_for_wl_seat(&mut self, seat: &WlSeat, idle_time: Duration) {
+        let Some(notifications) = self.notifications.get(seat) else {
+            return;
+        };
+
+        for notification in notifications {
+            let data = notification.data::<IdleNotificationUserData>().unwrap();
+
+            if data.is_idle() {
+                if data.timeout < idle_time {
+                    continue;
+                }
+                notification.resumed();
+                data.set_idle(false);
+            }
+
+            self.reinsert_timer_with_offset(notification, Some(idle_time));
+        }
+    }
+
+    /// Pretend that all seats have been idle for exactly `idle_time`, ignoring inhibitors.
+    pub fn force_idle_all(&mut self, idle_time: Duration) {
+        for notification in self.notifications() {
+            let data = notification.data::<IdleNotificationUserData>().unwrap();
+
+            if data.is_idle() {
+                if data.timeout < idle_time {
+                    continue;
+                }
+                notification.resumed();
+                data.set_idle(false);
+            }
+
+            self.reinsert_timer_with_offset(notification, Some(idle_time));
+        }
+    }
+
     /// Returns the [`ExtIdleNotifierV1`] global.
     pub fn global(&self) -> GlobalId {
         self.global.clone()
@@ -199,19 +239,25 @@ impl<D: IdleNotifierHandler> IdleNotifierState<D> {
     }
 
     fn reinsert_timer(&self, notification: &ExtIdleNotificationV1) {
+        self.reinsert_timer_with_offset(notification, None)
+    }
+
+    fn reinsert_timer_with_offset(&self, notification: &ExtIdleNotificationV1, offset: Option<Duration>) {
         let data = notification.data::<IdleNotificationUserData>().unwrap();
 
         if let Some(token) = data.take_timer_token() {
             self.loop_handle.remove(token);
         }
 
-        if !data.ignore_inhibitor && self.is_inhibited {
+        if offset.is_none() && !data.ignore_inhibitor && self.is_inhibited {
             return;
         }
 
+        let timeout = data.timeout - offset.unwrap_or(Duration::ZERO);
+
         let token = self
             .loop_handle
-            .insert_source(calloop::timer::Timer::from_duration(data.timeout), {
+            .insert_source(calloop::timer::Timer::from_duration(timeout), {
                 let idle_notification = notification.clone();
                 move |_, _, state| {
                     let data = idle_notification.data::<IdleNotificationUserData>().unwrap();
@@ -239,6 +285,15 @@ impl<D: IdleNotifierHandler + SeatHandler> IdleNotifierState<D> {
         for seat in &seat.arc.inner.lock().unwrap().known_seats {
             if let Ok(seat) = seat.upgrade() {
                 self.notify_activity_for_wl_seat(&seat);
+            }
+        }
+    }
+
+    /// Pretend that the seat has been idle for exactly `idle_time`, ignoring inhibitors.
+    pub fn force_idle(&mut self, seat: &Seat<D>, idle_time: Duration) {
+        for seat in &seat.arc.inner.lock().unwrap().known_seats {
+            if let Ok(seat) = seat.upgrade() {
+                self.force_idle_for_wl_seat(&seat, idle_time);
             }
         }
     }
