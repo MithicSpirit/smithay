@@ -253,7 +253,7 @@ impl<D: IdleNotifierHandler> IdleNotifierState<D> {
             return;
         }
 
-        let timeout = data.timeout - offset.unwrap_or(Duration::ZERO);
+        let timeout = data.timeout.saturating_sub(offset.unwrap_or(Duration::ZERO));
 
         let token = self
             .loop_handle
